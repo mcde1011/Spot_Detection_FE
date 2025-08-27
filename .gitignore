@@ -1,0 +1,10 @@
+build/
+devel/
+install/
+log/
+ricoh_theta_views/
+.git/
+*.pyc
+*.swp
+.vscode/
+.idea/
