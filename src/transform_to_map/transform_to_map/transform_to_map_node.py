@@ -169,8 +169,8 @@ def createMarker(point_in_map):
     marker.header.frame_id = "camera_link"
     marker.type = Marker.CUBE
     marker.pose.position = point_in_map.point
-    marker.scale.x = 1.0
-    marker.scale.y = 1.0
+    marker.scale.x = 0.3
+    marker.scale.y = 0.3
     marker.scale.z = 0.01
     marker.color.r = 1.0
     marker.color.g = 0.0
