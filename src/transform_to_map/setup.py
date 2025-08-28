@@ -10,6 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', ['launch/transform_to_map_launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -21,6 +22,7 @@ setup(
     entry_points={
     'console_scripts': [
         'transform_to_map_node = transform_to_map.transform_to_map_node:main',
+        'tf_publisher = transform_to_map.tf_publisher:main'
     ],
     },
 )
