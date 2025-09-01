@@ -8,7 +8,7 @@ from vision_msgs.msg import Pose2D
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import MarkerArray, Marker
 from tf2_ros import Buffer, TransformListener
-# import tf2_geometry_msgs
+import tf2_geometry_msgs
 from geometry_msgs.msg import PointStamped, Point
 from ament_index_python.packages import get_package_share_directory
 
@@ -109,13 +109,48 @@ class TransformToMapNode(Node):
     def get_semantic_value(self, key, default=None):
         return self.semantic_data.get(key, default)
 
+    def addObjToYaml(self, point_in_base_link, obj_class):
+        """Add object to semantic map"""
+        object_id = self.generate_next_id(obj_class)
+        new_object = {
+            'object_type': obj_class,
+            'id': object_id,
+            'position': [float(point_in_base_link.point.x), float(point_in_base_link.point.y), float(point_in_base_link.point.z)]  # [x, y, z]
+        }
+        # print("created obj: ", new_object, flush=True)
+        # Make sure file isn't empty
+        if 'objects' not in self.semantic_data:
+            self.semantic_data['objects'] = []
+        
+        self.semantic_data['objects'].append(new_object)
+        # self.get_logger().info(f"Added object {object_id} at position {point_in_base_link}")
+        return True
+    
+    def generate_next_id(self, obj_class):
+        count = len([obj for obj in self.semantic_data.get('objects', []) if obj.get('object_type') == obj_class])
+        next_number = count + 1
+        
+        # Format: object_type_XXX
+        return f"{obj_class}_{next_number:03d}"
+    
+    def save_semantic_map(self):
+        try:
+            with open(self.smap_filename, 'w', encoding='utf-8') as f:
+                yaml.dump(self.semantic_data, f, default_flow_style=False, allow_unicode=True)
+            self.get_logger().info(f"Saved semantic map to {self.smap_filename}")
+            return True
+        except Exception as e:
+            self.get_logger().error(f"Could not save semantic map: {e}")
+            return False
+    
+######################################################################################################################################################################
 
     def front_cb(self, msg):
         label = "front"
         detections_arr = msg
         success = self.drawObjInMap(label,detections_arr)
-        if not success:
-            self.get_logger().error('ERROR WHILE DRAWING OBJECTS FROM FRONT CAMERA')
+        # if not success:
+        #     self.get_logger().error('ERROR WHILE DRAWING OBJECTS FROM FRONT CAMERA')
 
     def back_cb(self, msg):
         label = "back"
@@ -161,6 +196,8 @@ class TransformToMapNode(Node):
             # print("ID: ", detection.results[0].hypothesis.class_id, flush=True)
             # print("center: ", detection.bbox.center, " X: ", detection.bbox.size_x, " Y: ", detection.bbox.size_y)
             bbox = detection.bbox
+            obj_id = detection.results[i].hypothesis.class_id
+            obj_class = idToString(obj_id)
             # voerst nur für Feuerlöscher
             dist_approximation = calcDistance(bbox)
             # print("dist_approximation:", dist_approximation, " label: ", label)
@@ -180,29 +217,35 @@ class TransformToMapNode(Node):
                 point_camera_frame = getPose(label, dist_approximation, angle_in_image)
 
             point_in_base_link = self.transformToBaselink(point_camera_frame)
-            self.marker = createMarker(detection.results[i].hypothesis.class_id, point_in_base_link)
+            self.marker = createMarker(obj_class, point_in_base_link)
             self.marker.lifetime = rclpy.duration.Duration(seconds=9).to_msg()
-            save_marker_to_yaml(self.marker)
+            self.addObjToYaml(point_in_base_link, obj_class)
             self.marker_array.markers.append(self.marker)
             i += 1
 
+
         self.marker_pub.publish(self.marker_array)
-        
+        self.save_semantic_map()
         if len(self.marker_array.markers) > 0:
             return True
         return False
 
 
     def transformToBaselink(self, camera_frame_point):
-
         # Transformiere in die Karte
         point_in_base_link = self.tf_buffer.transform(
             camera_frame_point, "hkaspot/base_link", timeout=rclpy.duration.Duration(seconds=1))
         return point_in_base_link
 
+def idToString(obj_id):
+    if obj_id == "1":
+        return "fire_extinguisher"
+    elif obj_id == "2":
+        return "fire_extinguisher_sign"
+    else:
+        return "unknown class"
 
 def calcDistance(bbox):
-    # print("bbox size: ", bbox.size_y)
     dist_approximation = 0.1385566 + (2088723.861/(1+((bbox.size_y/0.0008264511) ** 1.174847)))
     return dist_approximation
 
@@ -234,8 +277,7 @@ def createMarker(id, point_in_map):
     marker.header.frame_id = "camera_link"
 
     # Fire extinguisher
-    if id == "1":
-        marker.ns = "fire_extinguisher"
+    if id == "fire_extinguisher":
         marker.id = 1
         marker.type = Marker.LINE_STRIP
         marker.action = Marker.ADD
@@ -256,8 +298,7 @@ def createMarker(id, point_in_map):
             marker.points.append(p)
     
     # Fire extinguisher sign
-    elif id == "2":
-        marker.ns = "fire_extinguisher_sign"
+    elif id == "fire_extinguisher_sign":
         marker.id = 2
         marker.type = Marker.CUBE
         marker.pose.position = point_in_map.point
@@ -271,20 +312,6 @@ def createMarker(id, point_in_map):
 
     return marker
 
-def save_marker_to_yaml(marker, filename="semantic_map.yaml"):
-    try:
-        with open(filename, "r") as f:
-            data = yaml.safe_load(f) or {}
-    except FileNotFoundError:
-        data = {}
-
-    if "objects" not in data:
-        data["objects"] = []
-
-    data["objects"].append(marker)
-
-    with open(filename, "w") as f:
-        yaml.dump(data, f)
 
 
 def main(args=None):
