@@ -12,12 +12,12 @@ class StaticTFPublisher(Node):
 
     def publish_static_transform(self):
         t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = 'base_link'
+        t.header.stamp = rclpy.time.Time().to_msg()
+        t.header.frame_id = 'hkaspot/base_link'
         t.child_frame_id = 'camera_link'
-        t.transform.translation.x = 0.2
+        t.transform.translation.x = -0.117
         t.transform.translation.y = 0.0
-        t.transform.translation.z = 0.0
+        t.transform.translation.z = 0.111
 
         # Quaternion aus Euler-Winkeln (hier: keine Rotation)
         quat = tf_transformations.quaternion_from_euler(0, 0, 0)

@@ -21,7 +21,7 @@ class RicohPublisher(Node):
         super().__init__('ricoh_theta_publisher')
 
         # Kameraeinstellungen
-        # self.CAMERA_IP = "192.168.137.170"
+        # self.CAMERA_IP = "192.168.80.101"
         self.CAMERA_IP = "10.42.0.17"
         self.USERNAME = "THETAYR30101068"
         self.PASSWORD = "30101068"
