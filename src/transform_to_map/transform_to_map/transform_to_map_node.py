@@ -22,6 +22,7 @@ class TransformToMapNode(Node):
         self.marker = Marker()
         self.semantic_data = {}
         self.load_semantic_map()
+        self.timer = self.create_timer(2.0, self.publish_semantic_map)
         self.position_tolerance = 0.4
 
         self.marker_pub = self.create_publisher(MarkerArray, 'utils_rviz_visualization', 10)
@@ -112,10 +113,11 @@ class TransformToMapNode(Node):
 
     def addObjToYaml(self, point_in_base_link, obj_class):
         """Add object to semantic map"""
+        point_in_map = self.transformToMap(point_in_base_link)
         new_position = np.array([
-            float(point_in_base_link.point.x),
-            float(point_in_base_link.point.y),
-            float(point_in_base_link.point.z)
+            float(point_in_map.point.x),
+            float(point_in_map.point.y),
+            float(point_in_map.point.z)
         ])
 
         if 'objects' not in self.semantic_data:
@@ -162,6 +164,32 @@ class TransformToMapNode(Node):
         except Exception as e:
             self.get_logger().error(f"Could not save semantic map: {e}")
             return False
+        
+    def publish_semantic_map(self):
+        """Visualize all objects from YAML as markers in RViz"""
+        self.marker_array.markers.clear()
+
+        if 'objects' not in self.semantic_data:
+            return
+
+        for obj in self.semantic_data['objects']:
+            obj_class = obj['object_type']
+            pos = obj['position']
+            
+            point_stamped = PointStamped()
+            point_stamped.header.stamp = Time().to_msg()
+            point_stamped.header.frame_id = "map"
+            point_stamped.point.x = pos[0]
+            point_stamped.point.y = pos[1]
+            point_stamped.point.z = pos[2]
+
+            marker = createMarker(obj_class, "map", point_stamped)
+            marker.id = hash(obj['id']) % 10000  # stable Marker-ID
+            marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg()
+            self.marker_array.markers.append(marker)
+
+        if self.marker_array.markers:
+            self.marker_pub.publish(self.marker_array)
 
 ######################################################################################################################################################################
 
@@ -237,7 +265,7 @@ class TransformToMapNode(Node):
                 point_camera_frame = getPose(label, dist_approximation, angle_in_image)
 
             point_in_base_link = self.transformToBaselink(point_camera_frame)
-            self.marker = createMarker(obj_class, point_in_base_link)
+            self.marker = createMarker(obj_class, "hkaspot/base_link", point_in_base_link)
             self.marker.lifetime = rclpy.duration.Duration(seconds=9).to_msg()
             self.addObjToYaml(point_in_base_link, obj_class)
             self.marker_array.markers.append(self.marker)
@@ -256,6 +284,12 @@ class TransformToMapNode(Node):
         point_in_base_link = self.tf_buffer.transform(
             camera_frame_point, "hkaspot/base_link", timeout=rclpy.duration.Duration(seconds=1))
         return point_in_base_link
+
+    def transformToMap(self, base_link_point):
+        # Transformiere in die Karte
+        point_in_map = self.tf_buffer.transform(
+            base_link_point, "map", timeout=rclpy.duration.Duration(seconds=1))
+        return point_in_map
 
 def idToString(obj_id):
     if obj_id == "1":
@@ -292,10 +326,11 @@ def getPose(label, dist_approximation, angle_in_image):
 
     return point_stamped
 
-def createMarker(id, point_in_map):
+def createMarker(id, frame_id, point_in_map):
     marker = Marker()
-    marker.header.frame_id = "camera_link"
-
+    marker.header.frame_id = frame_id
+    marker.ns = id
+    marker.id = hash(id) % (2**31 - 1) if id else 0
     # Fire extinguisher
     if id == "fire_extinguisher":
         marker.id = 1
