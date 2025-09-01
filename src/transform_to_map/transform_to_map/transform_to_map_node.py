@@ -22,6 +22,7 @@ class TransformToMapNode(Node):
         self.marker = Marker()
         self.semantic_data = {}
         self.load_semantic_map()
+        self.position_tolerance = 0.4
 
         self.marker_pub = self.create_publisher(MarkerArray, 'utils_rviz_visualization', 10)
 
@@ -111,38 +112,57 @@ class TransformToMapNode(Node):
 
     def addObjToYaml(self, point_in_base_link, obj_class):
         """Add object to semantic map"""
-        object_id = self.generate_next_id(obj_class)
-        new_object = {
-            'object_type': obj_class,
-            'id': object_id,
-            'position': [float(point_in_base_link.point.x), float(point_in_base_link.point.y), float(point_in_base_link.point.z)]  # [x, y, z]
-        }
-        # print("created obj: ", new_object, flush=True)
-        # Make sure file isn't empty
+        new_position = np.array([
+            float(point_in_base_link.point.x),
+            float(point_in_base_link.point.y),
+            float(point_in_base_link.point.z)
+        ])
+
         if 'objects' not in self.semantic_data:
             self.semantic_data['objects'] = []
-        
-        self.semantic_data['objects'].append(new_object)
-        # self.get_logger().info(f"Added object {object_id} at position {point_in_base_link}")
-        return True
-    
+
+        updated = False
+        for obj in self.semantic_data['objects']:
+            if obj.get('object_type') == obj_class:
+                old_pos = np.array(obj.get('position', [0, 0, 0]))
+                dist = np.linalg.norm(new_position - old_pos)
+                if dist <= self.position_tolerance:
+                    # Overwrite object
+                    obj['position'] = new_position.tolist()
+                    updated = True
+                    break
+
+        if not updated:
+            # Create new entry
+            object_id = self.generate_next_id(obj_class)
+            new_object = {
+                'object_type': obj_class,
+                'id': object_id,
+                'position': new_position.tolist()
+            }
+            self.semantic_data['objects'].append(new_object)
+            self.get_logger().info(
+                f"Added new {obj_class} with id {object_id}"
+            )
+        return True    
+
     def generate_next_id(self, obj_class):
         count = len([obj for obj in self.semantic_data.get('objects', []) if obj.get('object_type') == obj_class])
         next_number = count + 1
         
         # Format: object_type_XXX
         return f"{obj_class}_{next_number:03d}"
-    
+
     def save_semantic_map(self):
         try:
             with open(self.smap_filename, 'w', encoding='utf-8') as f:
                 yaml.dump(self.semantic_data, f, default_flow_style=False, allow_unicode=True)
-            self.get_logger().info(f"Saved semantic map to {self.smap_filename}")
-            return True
+            # self.get_logger().info(f"Saved semantic map to {self.smap_filename}")
+            # return True
         except Exception as e:
             self.get_logger().error(f"Could not save semantic map: {e}")
             return False
-    
+
 ######################################################################################################################################################################
 
     def front_cb(self, msg):
