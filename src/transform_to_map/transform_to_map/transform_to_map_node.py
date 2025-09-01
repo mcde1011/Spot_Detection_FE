@@ -1,17 +1,16 @@
 import rclpy
 import numpy as np
+import os
+import yaml
 from rclpy.node import Node
 from rclpy.time import Time
 from vision_msgs.msg import Pose2D
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import MarkerArray, Marker
 from tf2_ros import Buffer, TransformListener
-import tf2_geometry_msgs
+# import tf2_geometry_msgs
 from geometry_msgs.msg import PointStamped, Point
-
-# BB von Feuerlöscher und Schild haben feste Größe in Occ Map
-
-# Nehme an ID von Feuerlöscher ist 1 und von Schild ist 2 
+from ament_index_python.packages import get_package_share_directory
 
 class TransformToMapNode(Node):
     def __init__(self):
@@ -21,6 +20,8 @@ class TransformToMapNode(Node):
         self.listener = TransformListener(self.tf_buffer, self)
         self.marker_array = MarkerArray()
         self.marker = Marker()
+        self.semantic_data = {}
+        self.load_semantic_map()
 
         self.marker_pub = self.create_publisher(MarkerArray, 'utils_rviz_visualization', 10)
 
@@ -65,6 +66,49 @@ class TransformToMapNode(Node):
             self.down_cb,
             10
         )
+
+    def load_semantic_map(self):
+        """load YAML-file with graceful handling for empty files"""
+        try:
+            package_dir = get_package_share_directory('transform_to_map')
+            self.smap_filename = os.path.join(package_dir, 'config', 'semantic_map.yaml')
+        except Exception as e:
+            self.get_logger().error(f"Could not find package directory: {e}")
+            return
+
+        try:
+            if not os.path.exists(self.smap_filename):
+                self.get_logger().warn(f"YAML file does not exist: {self.smap_filename}")
+                return
+                
+            with open(self.smap_filename, "r", encoding='utf-8') as f:
+                loaded_data = yaml.safe_load(f)
+                
+            # check if file is empty 
+            if loaded_data is None:
+                self.get_logger().warn("YAML file is empty - using default empty configuration")
+                self.semantic_data = {}
+            elif isinstance(loaded_data, dict):
+                self.semantic_data = loaded_data
+                self.get_logger().info(f"Successfully loaded semantic map from: {self.smap_filename}")
+            else:
+                self.get_logger().warn(f"YAML file contains unexpected data type: {type(loaded_data)}")
+                self.semantic_data = {}
+                
+        except yaml.YAMLError as e:
+            self.get_logger().error(f"Error parsing YAML file: {e}")
+            self.semantic_data = {}
+        except Exception as e:
+            self.get_logger().error(f"Error loading YAML file: {e}")
+            self.semantic_data = {}
+        
+    def get_objects(self):
+        # semantic_data can't be none
+        return self.semantic_data.get("objects", [])
+    
+    def get_semantic_value(self, key, default=None):
+        return self.semantic_data.get(key, default)
+
 
     def front_cb(self, msg):
         label = "front"
@@ -138,6 +182,7 @@ class TransformToMapNode(Node):
             point_in_base_link = self.transformToBaselink(point_camera_frame)
             self.marker = createMarker(detection.results[i].hypothesis.class_id, point_in_base_link)
             self.marker.lifetime = rclpy.duration.Duration(seconds=9).to_msg()
+            save_marker_to_yaml(self.marker)
             self.marker_array.markers.append(self.marker)
             i += 1
 
@@ -190,8 +235,8 @@ def createMarker(id, point_in_map):
 
     # Fire extinguisher
     if id == "1":
-        # marker.ns = "circle"
-        # marker.id = 0
+        marker.ns = "fire_extinguisher"
+        marker.id = 1
         marker.type = Marker.LINE_STRIP
         marker.action = Marker.ADD
         marker.pose.orientation.w = 1.0
@@ -202,7 +247,7 @@ def createMarker(id, point_in_map):
         marker.color.a = 1.0
         resolution = 20
         radius = 0.3
-        for i in range(resolution+ 1):  # +1 für geschlossenen Kreis
+        for i in range(resolution+ 1):  # +1 to close the circle
             angle = 2 * np.pi * i / resolution
             p = Point()
             p.x = point_in_map.point.x + radius * np.cos(angle)
@@ -212,6 +257,8 @@ def createMarker(id, point_in_map):
     
     # Fire extinguisher sign
     elif id == "2":
+        marker.ns = "fire_extinguisher_sign"
+        marker.id = 2
         marker.type = Marker.CUBE
         marker.pose.position = point_in_map.point
         marker.scale.x = 0.2
@@ -223,6 +270,22 @@ def createMarker(id, point_in_map):
         marker.color.a = 1.0
 
     return marker
+
+def save_marker_to_yaml(marker, filename="semantic_map.yaml"):
+    try:
+        with open(filename, "r") as f:
+            data = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        data = {}
+
+    if "objects" not in data:
+        data["objects"] = []
+
+    data["objects"].append(marker)
+
+    with open(filename, "w") as f:
+        yaml.dump(data, f)
+
 
 def main(args=None):
     rclpy.init(args=args)
