@@ -21,9 +21,22 @@ class TransformToMapNode(Node):
         self.marker_array = MarkerArray()
         self.marker = Marker()
         self.semantic_data = {}
+        
+        # get path to semantic map and load it 
+        self.declare_parameter("semantic_map_file", "")
+        self.smap_filename = self.get_parameter("semantic_map_file").get_parameter_value().string_value
+        if not self.smap_filename:
+            self.get_logger().error("No semantic_map_file parameter provided")
         self.load_semantic_map()
-        self.timer = self.create_timer(2.0, self.publish_semantic_map)
-        self.position_tolerance = 0.4
+        self.timer = self.create_timer(5.0, self.publish_semantic_map)
+
+        # read params.yaml
+        self.declare_parameter("camera_frame", "camera_link")
+        self.camera_frame = self.get_parameter("camera_frame").get_parameter_value().string_value
+        self.declare_parameter("base_frame", "hkaspot/base_link")
+        self.base_frame = self.get_parameter("base_frame").get_parameter_value().string_value
+        self.declare_parameter("position_tolerance", 0.4)
+        self.position_tolerance = self.get_parameter("position_tolerance").get_parameter_value().double_value
 
         self.marker_pub = self.create_publisher(MarkerArray, 'utils_rviz_visualization', 10)
 
@@ -69,15 +82,12 @@ class TransformToMapNode(Node):
             10
         )
 
+    ####################################################################
+    ###                     SEMANTIC MAP                             ###
+    ####################################################################
+
     def load_semantic_map(self):
         """load YAML-file with graceful handling for empty files"""
-        try:
-            package_dir = get_package_share_directory('transform_to_map')
-            self.smap_filename = os.path.join(package_dir, 'config', 'semantic_map.yaml')
-        except Exception as e:
-            self.get_logger().error(f"Could not find package directory: {e}")
-            return
-
         try:
             if not os.path.exists(self.smap_filename):
                 self.get_logger().warn(f"YAML file does not exist: {self.smap_filename}")
@@ -104,12 +114,12 @@ class TransformToMapNode(Node):
             self.get_logger().error(f"Error loading YAML file: {e}")
             self.semantic_data = {}
         
-    def get_objects(self):
-        # semantic_data can't be none
-        return self.semantic_data.get("objects", [])
+    # def get_objects(self):
+    #     # semantic_data can't be none
+    #     return self.semantic_data.get("objects", [])
     
-    def get_semantic_value(self, key, default=None):
-        return self.semantic_data.get(key, default)
+    # def get_semantic_value(self, key, default=None):
+    #     return self.semantic_data.get(key, default)
 
     def addObjToYaml(self, point_in_base_link, obj_class):
         """Add object to semantic map"""
@@ -175,7 +185,8 @@ class TransformToMapNode(Node):
         for obj in self.semantic_data['objects']:
             obj_class = obj['object_type']
             pos = obj['position']
-            
+            id = obj['id']
+
             point_stamped = PointStamped()
             point_stamped.header.stamp = Time().to_msg()
             point_stamped.header.frame_id = "map"
@@ -183,15 +194,19 @@ class TransformToMapNode(Node):
             point_stamped.point.y = pos[1]
             point_stamped.point.z = pos[2]
 
-            marker = createMarker(obj_class, "map", point_stamped)
-            marker.id = hash(obj['id']) % 10000  # stable Marker-ID
+            marker = createMarker(obj_class, id, "map", point_stamped)
             marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg()
             self.marker_array.markers.append(marker)
+
+            text_marker = createTextMarker(id, "map", point_stamped)
+            self.marker_array.markers.append(text_marker)
 
         if self.marker_array.markers:
             self.marker_pub.publish(self.marker_array)
 
-######################################################################################################################################################################
+    ####################################################################
+    ###                       CALLBACKS                              ###
+    ####################################################################
 
     def front_cb(self, msg):
         label = "front"
@@ -235,24 +250,28 @@ class TransformToMapNode(Node):
         # if not success:
             # self.get_logger().error('ERROR WHILE DRAWING OBJECTS FROM DOWN CAMERA')
 
+    ####################################################################
+    ###                     DRAW OBJECT IN MAP                       ###
+    ####################################################################
 
     def drawObjInMap(self, label, detections_arr):
         self.marker_array.markers.clear()
         point_camera_frame = PointStamped()
         i = 0
         for detection in detections_arr.detections:
-            # print("ID: ", detection.results[0].hypothesis.class_id, flush=True)
-            # print("center: ", detection.bbox.center, " X: ", detection.bbox.size_x, " Y: ", detection.bbox.size_y)
+            if not detection.results:
+                self.get_logger().warn("Detection without results – skipping")
+                continue
+
             bbox = detection.bbox
-            obj_id = detection.results[i].hypothesis.class_id
-            obj_class = idToString(obj_id)
-            # voerst nur für Feuerlöscher
+            obj_class = idToString(detection.results[i].hypothesis.class_id)
+            obj_id = obj_class + str(i)
+            # voerst nur für Feuerlöscher ##################################################################################
             dist_approximation = calcDistance(bbox)
-            # print("dist_approximation:", dist_approximation, " label: ", label)
             if label != "up" and label != "down":
                 # calculate angle to object by using camera pixels (FoV = 90°, 800x800 Pixel)
                 angle_in_image = -(0.1125 * (bbox.center.position.x - 400) * np.pi) / 180
-                point_camera_frame = getPose(label, dist_approximation, angle_in_image)
+                point_camera_frame = self.getPose(label, dist_approximation, angle_in_image)
             else:
                 h = 2.275
                 # delta from image middlepoint
@@ -262,15 +281,14 @@ class TransformToMapNode(Node):
                 angle_in_image = np.arctan(dx/dy)
                 vertical_angle = (0.1125 * np.sqrt(dx ** 2 + dy ** 2) * np.pi) /180
                 dist_approximation = np.sin(vertical_angle * h)
-                point_camera_frame = getPose(label, dist_approximation, angle_in_image)
+                point_camera_frame = self.getPose(label, dist_approximation, angle_in_image)
 
-            point_in_base_link = self.transformToBaselink(point_camera_frame)
-            self.marker = createMarker(obj_class, "hkaspot/base_link", point_in_base_link)
-            self.marker.lifetime = rclpy.duration.Duration(seconds=9).to_msg()
+            point_in_base_link = self.transformToBaseFrame(point_camera_frame)
+            self.marker = createMarker(obj_class, obj_id, self.base_frame, point_in_base_link)
+            self.marker.lifetime = rclpy.duration.Duration(seconds=1).to_msg()
             self.addObjToYaml(point_in_base_link, obj_class)
             self.marker_array.markers.append(self.marker)
             i += 1
-
 
         self.marker_pub.publish(self.marker_array)
         self.save_semantic_map()
@@ -278,18 +296,38 @@ class TransformToMapNode(Node):
             return True
         return False
 
-
-    def transformToBaselink(self, camera_frame_point):
-        # Transformiere in die Karte
+    def transformToBaseFrame(self, camera_frame_point):
         point_in_base_link = self.tf_buffer.transform(
-            camera_frame_point, "hkaspot/base_link", timeout=rclpy.duration.Duration(seconds=1))
+            camera_frame_point, self.base_frame, timeout=rclpy.duration.Duration(seconds=1))
         return point_in_base_link
 
     def transformToMap(self, base_link_point):
-        # Transformiere in die Karte
         point_in_map = self.tf_buffer.transform(
             base_link_point, "map", timeout=rclpy.duration.Duration(seconds=1))
         return point_in_map
+
+    def getPose(self, label, dist_approximation, angle_in_image):
+        if label != "up" and label != "down":
+            if label == "right":
+                angle_in_image = angle_in_image - np.pi/2
+            elif label == "back":
+                angle_in_image = angle_in_image + np.pi
+            elif label == "left":
+                angle_in_image = angle_in_image + np.pi/2
+
+        point_stamped = PointStamped()
+        point_stamped.header.stamp = Time().to_msg()
+        point_stamped.header.frame_id = self.camera_frame
+        point_stamped.point.x = np.cos(angle_in_image) * dist_approximation
+        point_stamped.point.y = np.sin(angle_in_image) * dist_approximation
+        point_stamped.point.z = 0.0
+
+        if label == "up" and label == "down":
+            buffer_x = point_stamped.point.x
+            point_stamped.point.x = point_stamped.point.y
+            point_stamped.point.y = buffer_x
+
+        return point_stamped
 
 def idToString(obj_id):
     if obj_id == "1":
@@ -300,39 +338,17 @@ def idToString(obj_id):
         return "unknown class"
 
 def calcDistance(bbox):
+    """Distance approximation with symmetrical sigmoidal"""
     dist_approximation = 0.1385566 + (2088723.861/(1+((bbox.size_y/0.0008264511) ** 1.174847)))
     return dist_approximation
 
-def getPose(label, dist_approximation, angle_in_image):
-    if label != "up" and label != "down":
-        if label == "right":
-            angle_in_image = angle_in_image - np.pi/2
-        elif label == "back":
-            angle_in_image = angle_in_image + np.pi
-        elif label == "left":
-            angle_in_image = angle_in_image + np.pi/2
-
-    point_stamped = PointStamped()
-    point_stamped.header.stamp = Time().to_msg()
-    point_stamped.header.frame_id = "camera_link"
-    point_stamped.point.x = np.cos(angle_in_image) * dist_approximation
-    point_stamped.point.y = np.sin(angle_in_image) * dist_approximation
-    point_stamped.point.z = 0.0
-
-    if label == "up" and label == "down":
-        buffer_x = point_stamped.point.x
-        point_stamped.point.x = point_stamped.point.y
-        point_stamped.point.y = buffer_x
-
-    return point_stamped
-
-def createMarker(id, frame_id, point_in_map):
+def createMarker(obj_class, obj_id, frame_id, point_in_map):
     marker = Marker()
     marker.header.frame_id = frame_id
-    marker.ns = id
-    marker.id = hash(id) % (2**31 - 1) if id else 0
-    # Fire extinguisher
-    if id == "fire_extinguisher":
+    marker.ns = obj_id
+    marker.id = hash(obj_id) % (2**31 - 1) if obj_id else 0
+
+    if obj_class == "fire_extinguisher":
         marker.id = 1
         marker.type = Marker.LINE_STRIP
         marker.action = Marker.ADD
@@ -351,9 +367,8 @@ def createMarker(id, frame_id, point_in_map):
             p.y = point_in_map.point.y + radius * np.sin(angle)
             p.z = 0.0
             marker.points.append(p)
-    
-    # Fire extinguisher sign
-    elif id == "fire_extinguisher_sign":
+
+    elif obj_class == "fire_extinguisher_sign":
         marker.id = 2
         marker.type = Marker.CUBE
         marker.pose.position = point_in_map.point
@@ -367,7 +382,28 @@ def createMarker(id, frame_id, point_in_map):
 
     return marker
 
+def createTextMarker(obj_id, frame_id, point_in_map):
+    marker = Marker()
+    marker.header.frame_id = frame_id
+    marker.ns = "labels"
+    marker.id = hash("text_" + str(obj_id)) % (2**31 - 1)
 
+    marker.type = Marker.TEXT_VIEW_FACING
+    marker.action = Marker.ADD
+
+    marker.pose.position.x = point_in_map.point.x
+    marker.pose.position.y = point_in_map.point.y
+    marker.pose.position.z = point_in_map.point.z + 0.05
+
+    marker.scale.z = 0.15  # Fontsize in Meters
+    marker.color.r = 1.0
+    marker.color.g = 1.0
+    marker.color.b = 1.0
+    marker.color.a = 1.0
+
+    marker.text = str(obj_id)
+
+    return marker
 
 def main(args=None):
     rclpy.init(args=args)
